@@ -20,12 +20,12 @@ R_psp = R_psp_surface + R_sun_radius
 R_ref = 1.496e11
 
 # ============================================================
-# TIME
+# TIME 
 # ============================================================
 
-times = np.linspace(0.85, 0.90, 1200)
+times = np.linspace(1.7, 1.8, 1200)
 dt = times[1] - times[0]
-t0_true = 0.862
+t0_true = 1.747
 
 # ============================================================
 # IMPACT PULSE
@@ -50,39 +50,28 @@ def generate_measured_data():
 
     pulse = impact_pulse(times, t0_true)
 
-    # Base amplitudes
-    Bx = -0.25e-9 * pulse
-    By = -0.20e-9 * pulse
-    Bz =  0.05e-9 * pulse
+    Bx = -2.2e-10 * pulse
+    By =  1.8e-10 * pulse
+    Bz = -1.3e-10 * pulse
 
-    # ================= SPIKE =================
-    Bx += -0.18e-9 * np.exp(-((times - t0_true)/0.0005)**2)
-    By += -0.12e-9 * np.exp(-((times - (t0_true+0.00015))/0.0007)**2)
+    Bx += -1.8e-10 * np.exp(-((times - t0_true)/0.0005)**2)
+    By +=  1.2e-10 * np.exp(-((times - (t0_true+0.0002))/0.0007)**2)
+    Bz += -0.8e-10 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
-    #  FIXED Bz spike (reduced)
-    Bz += 0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
-
-    # ================= DECAY =================
     decay = np.exp(-(times - t0_true)/0.008)
     decay[times < t0_true] = 0
 
-    Bx += -0.06e-9 * decay
-    By += -0.025e-9 * decay
+    Bx += -0.5e-10 * decay
+    By +=  0.3e-10 * decay
+    Bz += -0.2e-10 * decay
 
-    #  FIXED Bz decay (reduced)
-    Bz += 0.015e-9 * decay
-
-    # ================= OSCILLATION =================
     osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
     osc[times < t0_true] = 0
 
     Bx += osc
     By += 0.8 * osc
+    Bz += 0.6 * osc
 
-    #  FIXED Bz oscillation (reduced)
-    Bz += 0.3 * osc
-
-    # ================= NOISE =================
     noise = 0.01e-9
     Bx += noise*np.random.randn(len(times))
     By += noise*np.random.randn(len(times))
@@ -168,10 +157,8 @@ def estimate_ions(Bmag, distance):
 
     return ions
 
-
-
 # ============================================================
-# EXTRA VALIDATION FUNCTIONS
+# VALIDATION FUNCTIONS
 # ============================================================
 
 def forward_model_error(point, SCM, B_peak):
@@ -189,10 +176,8 @@ def get_top_solutions(mesh, SCM, B_peak, top_n=5):
     solutions = []
 
     for i, tri in enumerate(mesh.vectors):
-
         p = (tri[0] + tri[1] + tri[2]) / 3
         err = forward_model_error(p, SCM, B_peak)
-
         solutions.append((err, i, p))
 
     solutions.sort(key=lambda x: x[0])
@@ -205,7 +190,6 @@ def sensitivity_test(mesh, SCM, B_peak, noise_level=0.05):
 
     new_point, _, _ = estimate_impact_inverse(mesh, SCM, B_perturbed)
     return new_point
-
 
 # ============================================================
 # MAIN
@@ -235,30 +219,26 @@ if __name__ == "__main__":
         Bz[peak_idx]
     ])
 
-    # ================= INVERSE =================
-
+    # INVERSE
     impact_point, tri_idx, error = estimate_impact_inverse(mesh, SCM, B_peak)
     distance = np.linalg.norm(SCM - impact_point)
     ions = estimate_ions(Bmag, distance)
 
-    # ================= FORWARD CHECK =================
-
+    # FORWARD CHECK
     forward_err = forward_model_error(impact_point, SCM, B_peak)
 
     print("\n===== FORWARD MODEL CHECK =====")
     print("Difference:", forward_err)
 
-    # ================= TOP SOLUTIONS =================
-
+    # TOP SOLUTIONS
     print("\n===== TOP 5 SOLUTIONS =====")
 
-    top_solutions = get_top_solutions(mesh, SCM, B_peak, top_n=5)
+    top_solutions = get_top_solutions(mesh, SCM, B_peak)
 
     for err, tri, pt in top_solutions:
         print(f"Error: {err:.3e}, Triangle: {tri}, Point: {pt}")
 
-    # ================= SENSITIVITY TEST =================
-
+    # SENSITIVITY TEST
     print("\n===== SENSITIVITY TEST =====")
 
     new_point = sensitivity_test(mesh, SCM, B_peak)
@@ -266,8 +246,7 @@ if __name__ == "__main__":
     print("Original impact:", impact_point)
     print("New impact:", new_point)
 
-    # ================= FINAL OUTPUT =================
-
+    # FINAL OUTPUT
     print("\n===== IMPACT ESTIMATION =====")
     print("Triangle:", tri_idx)
     print("Coordinates:", impact_point)
@@ -275,24 +254,22 @@ if __name__ == "__main__":
     print("Residual:", error)
     print("Ions:", ions)
 
-    # ================= PLOT =================
+# ================= PLOT =================
 
-    plt.figure(figsize=(12,4))
+plt.figure(figsize=(12,4))
 
-    plt.plot(times, Bx*1e9, color='blue', label="Bx")
-    plt.plot(times, By*1e9, color='orange', label="By")
-    plt.plot(times, Bz*1e9, color='green', label="Bz")
-    plt.plot(times, Bmag*1e9, color='red', linewidth=2, label="|B|")
+plt.plot(times, Bx*1e9, color='blue', label="Bx")
+plt.plot(times, By*1e9, color='orange', label="By")
+plt.plot(times, Bz*1e9, color='green', label="Bz")
+plt.plot(times, Bmag*1e9, color='red', linewidth=2, label="|B|")
 
-    plt.axvline(peak_time, linestyle='--', color='black')
+plt.axvline(peak_time, linestyle='--', color='black')
 
-    plt.xlim(peak_time - 0.01, peak_time + 0.02)
+plt.xlim(peak_time - 0.01, peak_time + 0.02)
 
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.xlabel("Time (s)")
-    plt.ylabel("SCM (nT)")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.xlabel("Time (s)")
+plt.ylabel("SCM (nT)")
 
-    plt.show()
-
-  
+plt.show()
