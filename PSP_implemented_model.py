@@ -1,227 +1,210 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import gaussian_filter1d
 from stl import mesh as stl_mesh
 
 # ============================================================
-# USER SETTINGS
+# CONSTANTS
 # ============================================================
 
-STL_PATH = r"C:/Users/klpra/OneDrive/Desktop/CU Boulder/Academics/Spring 2026/IS/PSP_CAD/PSP_CAD/PSP_Simplified.stl"
-
 mu0 = 4*np.pi*1e-7
-q_ion = 1.6e-12
+q_ion = 1.6e-19
 
-ION_COUNTS = [1000, 10000, 100000]
+# ============================================================
+# HELIOCENTRIC DISTANCE (PSP)
+# ============================================================
 
-# REAL SENSOR POSITION 
-SCM_OFFSET = np.array([-0.1, 0.2, 5.1])
+R_sun_radius = 6.96e8
+R_psp_surface = 6.1e9
+R_psp = R_psp_surface + R_sun_radius
+R_ref = 1.496e11
 
-times = np.linspace(0, 0.002, 1200)
-t0_true = 0.00085
+# ============================================================
+# TIME
+# ============================================================
 
-v_mean_ion = 10000
-v_sigma_ion = 2000
-
-# USER-DEFINED IMPACT POINT
-IMPACT_POINT = np.array([0.2, 3.3, 5.0])
-
+times = np.linspace(0.85, 0.90, 1200)
+dt = times[1] - times[0]
+t0_true = 0.862
 
 # ============================================================
 # IMPACT PULSE
 # ============================================================
 
-def impact_pulse(t, t0, tau_rise=8e-6, tau_decay=2.5e-4):
+def impact_pulse(t, t0):
     y = np.zeros_like(t)
-    mask = t >= t0
-    tt = t[mask] - t0
-    y[mask] = np.exp(-tt/tau_decay) - np.exp(-tt/tau_rise)
+    tt = t - t0
+    mask = tt >= 0
+
+    rise = 1 - np.exp(-tt[mask]/6e-4)
+    decay = np.exp(-tt[mask]/3e-3)
+
+    y[mask] = rise * decay
     return y
 
-
 # ============================================================
-# COSINE DISTRIBUTION
-# ============================================================
-
-def sample_cosine_direction(axis):
-
-    axis = axis / np.linalg.norm(axis)
-
-    while True:
-        theta = np.random.rand() * np.pi / 2
-        if np.random.rand() <= np.cos(theta):
-            break
-
-    phi = 2 * np.pi * np.random.rand()
-
-    if abs(axis[2]) < 0.9:
-        e1 = np.cross(axis, [0, 0, 1])
-    else:
-        e1 = np.cross(axis, [0, 1, 0])
-
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(axis, e1)
-
-    return (
-        np.cos(theta)*axis +
-        np.sin(theta)*(np.cos(phi)*e1 + np.sin(phi)*e2)
-    )
-
-
-# ============================================================
-# LOAD + RECENTER STL
+# SIGNAL 
 # ============================================================
 
-def load_stl_geometry(path):
+def generate_measured_data():
 
-    m = stl_mesh.Mesh.from_file(path)
+    pulse = impact_pulse(times, t0_true)
 
-    verts = m.vectors.reshape(-1, 3)
+    # Base amplitudes
+    Bx = -0.25e-9 * pulse
+    By = -0.20e-9 * pulse
+    Bz =  0.05e-9 * pulse
 
-    min_corner = verts.min(axis=0)
-    max_corner = verts.max(axis=0)
-    center = (min_corner + max_corner) / 2.0
+    # ================= SPIKE =================
+    Bx += -0.18e-9 * np.exp(-((times - t0_true)/0.0005)**2)
+    By += -0.12e-9 * np.exp(-((times - (t0_true+0.00015))/0.0007)**2)
 
-    m.vectors -= center
+    #  FIXED Bz spike (reduced)
+    Bz += 0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
-    print("Original STL offset:", center)
-    print("STL recentered to origin.\n")
+    # ================= DECAY =================
+    decay = np.exp(-(times - t0_true)/0.008)
+    decay[times < t0_true] = 0
 
-    return m
+    Bx += -0.06e-9 * decay
+    By += -0.025e-9 * decay
 
+    #  FIXED Bz decay (reduced)
+    Bz += 0.015e-9 * decay
 
-# ============================================================
-# FIND CLOSEST TRIANGLE
-# ============================================================
+    # ================= OSCILLATION =================
+    osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
+    osc[times < t0_true] = 0
 
-def find_closest_triangle(mesh, point):
+    Bx += osc
+    By += 0.8 * osc
 
-    min_dist = np.inf
-    best_idx = None
+    #  FIXED Bz oscillation (reduced)
+    Bz += 0.3 * osc
 
-    for i in range(len(mesh.vectors)):
-        v0, v1, v2 = mesh.vectors[i]
-        centroid = (v0 + v1 + v2) / 3
-
-        dist = np.linalg.norm(point - centroid)
-
-        if dist < min_dist:
-            min_dist = dist
-            best_idx = i
-
-    return best_idx
-
-
-# ============================================================
-# BIOT–SAVART
-# ============================================================
-
-def biot_savart(q, v_vec, r_vec):
-
-    R = np.linalg.norm(r_vec)
-
-    if R < 1e-9:
-        return np.zeros(3)
-
-    return (mu0/(4*np.pi)) * q * np.cross(v_vec, r_vec) / (R**3)
-
-
-# ============================================================
-# FORWARD MODEL
-# ============================================================
-
-def simulate_plasma_plume(N, impact_point, normal):
-
-    r_scm = SCM_OFFSET
-
-    Bx = np.zeros_like(times)
-    By = np.zeros_like(times)
-    Bz = np.zeros_like(times)
-
-    for _ in range(N):
-
-        v_dir = sample_cosine_direction(normal)
-        v_mag = np.random.normal(v_mean_ion, v_sigma_ion)
-        v_vec = v_mag * v_dir
-
-        r_vec = r_scm - impact_point
-
-        B_pref = biot_savart(q_ion, v_vec, r_vec)
-
-        t0_i = t0_true + np.random.randn()*1.5e-5
-        pulse = impact_pulse(times, t0_i)
-
-        Bx += B_pref[0] * pulse
-        By += B_pref[1] * pulse
-        Bz += B_pref[2] * pulse
-
-    Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
-
-    return Bx, By, Bz, Bmag
-
-
-# ============================================================
-# LOCAL SIMULATION
-# ============================================================
-
-def simulate_point(impact_point, normal):
-
-    r_scm = SCM_OFFSET
-
-    Bx = np.zeros_like(times)
-    By = np.zeros_like(times)
-    Bz = np.zeros_like(times)
-
-    for _ in range(3000):
-
-        v_dir = sample_cosine_direction(normal)
-        v_mag = np.random.normal(v_mean_ion, v_sigma_ion)
-        v_vec = v_mag * v_dir
-
-        r_vec = r_scm - impact_point
-
-        B_pref = biot_savart(q_ion, v_vec, r_vec)
-
-        t0_i = t0_true + np.random.randn()*1.5e-5
-        pulse = impact_pulse(times, t0_i)
-
-        Bx += B_pref[0] * pulse
-        By += B_pref[1] * pulse
-        Bz += B_pref[2] * pulse
+    # ================= NOISE =================
+    noise = 0.01e-9
+    Bx += noise*np.random.randn(len(times))
+    By += noise*np.random.randn(len(times))
+    Bz += noise*np.random.randn(len(times))
 
     return Bx, By, Bz
 
+# ============================================================
+# GEOMETRY
+# ============================================================
+
+def load_stl_geometry(path):
+    m = stl_mesh.Mesh.from_file(path)
+    verts = m.vectors.reshape(-1, 3)
+    center = (verts.min(axis=0) + verts.max(axis=0)) / 2
+    m.vectors -= center
+    return m
 
 # ============================================================
-# INVERSE LOCALIZATION
+# INVERSE SOLVER
 # ============================================================
 
-def inverse_localization(mesh, Bx_meas, By_meas, Bz_meas):
+def estimate_impact_inverse(mesh, SCM, B_peak):
 
     best_error = np.inf
     best_point = None
-    best_triangle = None
+    best_tri = -1
 
-    for i in range(len(mesh.vectors)):
+    for i, tri in enumerate(mesh.vectors):
 
-        v0, v1, v2 = mesh.vectors[i]
-        impact_point = (v0 + v1 + v2) / 3
-        normal = mesh.normals[i]
+        p = (tri[0] + tri[1] + tri[2]) / 3
+        r = SCM - p
+        r_norm = np.linalg.norm(r)
 
-        Bx_pred, By_pred, Bz_pred = simulate_point(impact_point, normal)
+        if r_norm < 1e-6:
+            continue
 
-        error = (
-            np.linalg.norm(Bx_pred - Bx_meas) +
-            np.linalg.norm(By_pred - By_meas) +
-            np.linalg.norm(Bz_pred - Bz_meas)
-        )
+        B_model = r / (r_norm**3)
+
+        scale = np.dot(B_peak, B_model) / np.dot(B_model, B_model)
+        B_model_scaled = scale * B_model
+
+        error = np.linalg.norm(B_peak - B_model_scaled)
 
         if error < best_error:
             best_error = error
-            best_point = impact_point
-            best_triangle = i
+            best_point = p
+            best_tri = i
 
-    return best_point, best_triangle, best_error
+    return best_point, best_tri, best_error
+
+# ============================================================
+# PHYSICS
+# ============================================================
+
+def estimate_ions(Bmag, distance):
+
+    peak_idx = np.argmax(Bmag)
+    window = 30
+    B_local = Bmag[peak_idx-window:peak_idx+window]
+
+    alpha0 = 2e-6
+
+    plasma_scale = (R_ref / R_psp)**2
+    velocity_scale = (R_ref / R_psp)**0.5
+    velocity_effect = velocity_scale**3
+    dust_scale = (R_ref / R_psp)**1.3
+
+    raw_scale = plasma_scale * velocity_effect * dust_scale
+
+    gamma = 0.28
+    effective_scale = raw_scale**gamma
+
+    alpha = alpha0 * effective_scale
+
+    I = alpha * (2*np.pi*distance*B_local)/mu0
+    Q_total = np.sum(I) * dt
+
+    electron_loss_factor = 0.3
+    Q_effective = Q_total * (1 - electron_loss_factor)
+
+    ions = Q_effective / q_ion
+
+    return ions
+
+
+
+# ============================================================
+# EXTRA VALIDATION FUNCTIONS
+# ============================================================
+
+def forward_model_error(point, SCM, B_peak):
+    r = SCM - point
+    r_norm = np.linalg.norm(r)
+    B_model = r / (r_norm**3)
+
+    scale = np.dot(B_peak, B_model) / np.dot(B_model, B_model)
+    B_model_scaled = scale * B_model
+
+    return np.linalg.norm(B_peak - B_model_scaled)
+
+
+def get_top_solutions(mesh, SCM, B_peak, top_n=5):
+    solutions = []
+
+    for i, tri in enumerate(mesh.vectors):
+
+        p = (tri[0] + tri[1] + tri[2]) / 3
+        err = forward_model_error(p, SCM, B_peak)
+
+        solutions.append((err, i, p))
+
+    solutions.sort(key=lambda x: x[0])
+    return solutions[:top_n]
+
+
+def sensitivity_test(mesh, SCM, B_peak, noise_level=0.05):
+    noise = noise_level * B_peak * np.random.randn(3)
+    B_perturbed = B_peak + noise
+
+    new_point, _, _ = estimate_impact_inverse(mesh, SCM, B_perturbed)
+    return new_point
 
 
 # ============================================================
@@ -230,65 +213,86 @@ def inverse_localization(mesh, Bx_meas, By_meas, Bz_meas):
 
 if __name__ == "__main__":
 
-    print("Loading spacecraft STL...\n")
+    STL_PATH = r"C:/Users/klpra/OneDrive/Desktop/CU Boulder/Academics/Spring 2026/IS/PSP_CAD/PSP_CAD/PSP_Simplified.stl"
 
     mesh = load_stl_geometry(STL_PATH)
+    SCM = np.array([-0.3, -0.5, 4.3])
 
-    print("SCM position:", SCM_OFFSET)
+    Bx, By, Bz = generate_measured_data()
 
-    tri_idx = find_closest_triangle(mesh, IMPACT_POINT)
+    Bx = gaussian_filter1d(Bx, 1)
+    By = gaussian_filter1d(By, 1)
+    Bz = gaussian_filter1d(Bz, 1)
 
-    v0, v1, v2 = mesh.vectors[tri_idx]
-    true_impact_point = (v0 + v1 + v2) / 3
-    normal = mesh.normals[tri_idx]
+    Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
 
-    print("\n===== USER IMPACT =====")
-    print("Requested:", IMPACT_POINT)
-    print("Using triangle:", tri_idx)
-    print("Actual impact:", true_impact_point)
+    peak_idx = np.argmax(Bmag)
+    peak_time = times[peak_idx]
 
-    #  REAL DISTANCE CHECK
-    R_true = np.linalg.norm(SCM_OFFSET - true_impact_point)
-    print("True SCM distance:", R_true, "m")
+    B_peak = np.array([
+        Bx[peak_idx],
+        By[peak_idx],
+        Bz[peak_idx]
+    ])
 
-    for N in ION_COUNTS:
+    # ================= INVERSE =================
 
-        print("\n===================================")
-        print("Running simulation with", N, "ions")
-        print("===================================")
+    impact_point, tri_idx, error = estimate_impact_inverse(mesh, SCM, B_peak)
+    distance = np.linalg.norm(SCM - impact_point)
+    ions = estimate_ions(Bmag, distance)
 
-        Bx_meas, By_meas, Bz_meas, Bmag = simulate_plasma_plume(
-            N, true_impact_point, normal
-        )
+    # ================= FORWARD CHECK =================
 
-        Bx_meas = uniform_filter1d(Bx_meas, 11)
-        By_meas = uniform_filter1d(By_meas, 11)
-        Bz_meas = uniform_filter1d(Bz_meas, 11)
+    forward_err = forward_model_error(impact_point, SCM, B_peak)
 
-        print("Running inverse localization...")
+    print("\n===== FORWARD MODEL CHECK =====")
+    print("Difference:", forward_err)
 
-        impact_point, tri, error = inverse_localization(
-            mesh, Bx_meas, By_meas, Bz_meas
-        )
+    # ================= TOP SOLUTIONS =================
 
-        R = np.linalg.norm(SCM_OFFSET - impact_point)
+    print("\n===== TOP 5 SOLUTIONS =====")
 
-        print("\n===== INVERSE SOLUTION =====")
-        print("Estimated triangle:", tri)
-        print("Estimated coordinates:", impact_point)
-        print("Distance SCM → impact:", R)
-        print("Residual error:", error)
+    top_solutions = get_top_solutions(mesh, SCM, B_peak, top_n=5)
 
-        print("\nComparison:")
-        print("True triangle:", tri_idx)
-        print("Triangle error:", abs(tri - tri_idx))
+    for err, tri, pt in top_solutions:
+        print(f"Error: {err:.3e}, Triangle: {tri}, Point: {pt}")
 
-        plt.figure(figsize=(10,6))
-        plt.plot(times, Bx_meas, label="Bx")
-        plt.plot(times, By_meas, label="By")
-        plt.plot(times, Bz_meas, label="Bz")
-        plt.plot(times, Bmag, label="|B|", linewidth=2)
-        plt.legend()
-        plt.grid()
-        plt.title(f"N = {N}")
-        plt.show()
+    # ================= SENSITIVITY TEST =================
+
+    print("\n===== SENSITIVITY TEST =====")
+
+    new_point = sensitivity_test(mesh, SCM, B_peak)
+
+    print("Original impact:", impact_point)
+    print("New impact:", new_point)
+
+    # ================= FINAL OUTPUT =================
+
+    print("\n===== IMPACT ESTIMATION =====")
+    print("Triangle:", tri_idx)
+    print("Coordinates:", impact_point)
+    print("Distance:", distance)
+    print("Residual:", error)
+    print("Ions:", ions)
+
+    # ================= PLOT =================
+
+    plt.figure(figsize=(12,4))
+
+    plt.plot(times, Bx*1e9, color='blue', label="Bx")
+    plt.plot(times, By*1e9, color='orange', label="By")
+    plt.plot(times, Bz*1e9, color='green', label="Bz")
+    plt.plot(times, Bmag*1e9, color='red', linewidth=2, label="|B|")
+
+    plt.axvline(peak_time, linestyle='--', color='black')
+
+    plt.xlim(peak_time - 0.01, peak_time + 0.02)
+
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.xlabel("Time (s)")
+    plt.ylabel("SCM (nT)")
+
+    plt.show()
+
+  
