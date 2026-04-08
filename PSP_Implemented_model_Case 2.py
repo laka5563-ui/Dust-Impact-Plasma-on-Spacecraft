@@ -54,10 +54,12 @@ def generate_measured_data():
     By = -0.20e-9 * pulse
     Bz =  0.05e-9 * pulse
 
+    # Gaussian spikes
     Bx += -0.18e-9 * np.exp(-((times - t0_true)/0.0005)**2)
     By += -0.12e-9 * np.exp(-((times - (t0_true+0.00015))/0.0007)**2)
     Bz += 0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
+    # Decay
     decay = np.exp(-(times - t0_true)/0.008)
     decay[times < t0_true] = 0
 
@@ -65,6 +67,7 @@ def generate_measured_data():
     By += -0.025e-9 * decay
     Bz += 0.015e-9 * decay
 
+    # Oscillation
     osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
     osc[times < t0_true] = 0
 
@@ -72,6 +75,7 @@ def generate_measured_data():
     By += 0.8 * osc
     Bz += 0.3 * osc
 
+    # Noise
     noise = 0.01e-9
     Bx += noise*np.random.randn(len(times))
     By += noise*np.random.randn(len(times))
@@ -124,34 +128,55 @@ def estimate_impact_inverse(mesh, SCM, B_peak):
     return best_point, best_tri, best_error
 
 # ============================================================
-# PHYSICS
+# SUN SCALING
 # ============================================================
 
 def estimate_ions(Bmag, distance):
 
     peak_idx = np.argmax(Bmag)
     window = 30
-    B_local = Bmag[peak_idx-window:peak_idx+window]
 
-    alpha0 = 2e-6
+    start = max(0, peak_idx - window)
+    end = min(len(Bmag), peak_idx + window)
 
-    plasma_scale = (R_ref / R_psp)**2
-    velocity_scale = (R_ref / R_psp)**0.5
-    velocity_effect = velocity_scale**3
-    dust_scale = (R_ref / R_psp)**1.3
+    B_local = Bmag[start:end]
 
-    raw_scale = plasma_scale * velocity_effect * dust_scale
+    # --------------------------------------------------------
+    # CURRENT FROM MAGNETIC FIELD
+    # --------------------------------------------------------
 
-    gamma = 0.28
-    effective_scale = raw_scale**gamma
+    I = (2 * np.pi * distance * B_local) / mu0
 
-    alpha = alpha0 * effective_scale
+    # --------------------------------------------------------
+    # HELIOCENTRIC SCALING 
+    # --------------------------------------------------------
+   
+    ratio = R_ref / R_psp
 
-    I = alpha * (2*np.pi*distance*B_local)/mu0
+    plasma_scale = ratio**2          # density scaling
+    velocity_scale = ratio**1.5      # v^3 scaling
+    dust_scale = ratio**1.3          # dust flux scaling
+
+    helioscale = plasma_scale * velocity_scale * dust_scale
+
+    I = I * helioscale
+
+    # --------------------------------------------------------
+    # TOTAL CHARGE
+    # --------------------------------------------------------
+   
     Q_total = np.sum(I) * dt
+
+    # --------------------------------------------------------
+    # PHYSICAL LOSS
+    # --------------------------------------------------------
 
     electron_loss_factor = 0.3
     Q_effective = Q_total * (1 - electron_loss_factor)
+
+    #--------------------------------------------------------
+    # IONS
+    # --------------------------------------------------------
 
     ions = Q_effective / q_ion
 
@@ -252,7 +277,7 @@ if __name__ == "__main__":
     print("New impact:", new_point)
 
     # ================= FINAL OUTPUT =================
-
+    
     print("\n===== IMPACT ESTIMATION =====")
     print("Triangle:", tri_idx)
     print("Coordinates:", impact_point)
