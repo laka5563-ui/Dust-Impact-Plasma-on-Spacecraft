@@ -54,10 +54,12 @@ def generate_measured_data():
     By =  1.8e-10 * pulse
     Bz = -1.3e-10 * pulse
 
+    # Gaussian spikes
     Bx += -1.8e-10 * np.exp(-((times - t0_true)/0.0005)**2)
     By +=  1.2e-10 * np.exp(-((times - (t0_true+0.0002))/0.0007)**2)
     Bz += -0.8e-10 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
+    # Decay
     decay = np.exp(-(times - t0_true)/0.008)
     decay[times < t0_true] = 0
 
@@ -65,6 +67,7 @@ def generate_measured_data():
     By +=  0.3e-10 * decay
     Bz += -0.2e-10 * decay
 
+    # Oscillation
     osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
     osc[times < t0_true] = 0
 
@@ -72,6 +75,7 @@ def generate_measured_data():
     By += 0.8 * osc
     Bz += 0.6 * osc
 
+    # Noise
     noise = 0.01e-9
     Bx += noise*np.random.randn(len(times))
     By += noise*np.random.randn(len(times))
@@ -124,34 +128,55 @@ def estimate_impact_inverse(mesh, SCM, B_peak):
     return best_point, best_tri, best_error
 
 # ============================================================
-# PHYSICS
+# SUN SCALING
 # ============================================================
 
 def estimate_ions(Bmag, distance):
 
     peak_idx = np.argmax(Bmag)
     window = 30
-    B_local = Bmag[peak_idx-window:peak_idx+window]
 
-    alpha0 = 2e-6
+    start = max(0, peak_idx - window)
+    end = min(len(Bmag), peak_idx + window)
 
-    plasma_scale = (R_ref / R_psp)**2
-    velocity_scale = (R_ref / R_psp)**0.5
-    velocity_effect = velocity_scale**3
-    dust_scale = (R_ref / R_psp)**1.3
+    B_local = Bmag[start:end]
 
-    raw_scale = plasma_scale * velocity_effect * dust_scale
+    # --------------------------------------------------------
+    # CURRENT FROM MAGNETIC FIELD
+    # --------------------------------------------------------
 
-    gamma = 0.28
-    effective_scale = raw_scale**gamma
+    I = (2 * np.pi * distance * B_local) / mu0
 
-    alpha = alpha0 * effective_scale
+    # --------------------------------------------------------
+    # HELIOCENTRIC SCALING 
+    # --------------------------------------------------------
 
-    I = alpha * (2*np.pi*distance*B_local)/mu0
+    ratio = R_ref / R_psp
+
+    plasma_scale = ratio**2          # density scaling
+    velocity_scale = ratio**1.5      # v^3 scaling
+    dust_scale = ratio**1.3          # dust flux scaling
+
+    helioscale = plasma_scale * velocity_scale * dust_scale
+
+    I = I * helioscale
+
+    # --------------------------------------------------------
+    # TOTAL CHARGE
+    # --------------------------------------------------------
+
     Q_total = np.sum(I) * dt
+
+    # --------------------------------------------------------
+    # PHYSICAL LOSS
+    # --------------------------------------------------------
 
     electron_loss_factor = 0.3
     Q_effective = Q_total * (1 - electron_loss_factor)
+
+    # --------------------------------------------------------
+    # IONS
+    # --------------------------------------------------------
 
     ions = Q_effective / q_ion
 
@@ -258,12 +283,12 @@ if __name__ == "__main__":
 
 plt.figure(figsize=(12,4))
 
-plt.plot(times, Bx*1e9, color='blue', label="Bx")
-plt.plot(times, By*1e9, color='orange', label="By")
-plt.plot(times, Bz*1e9, color='green', label="Bz")
-plt.plot(times, Bmag*1e9, color='red', linewidth=2, label="|B|")
+plt.plot(times, Bx*1e9, label="Bx")
+plt.plot(times, By*1e9, label="By")
+plt.plot(times, Bz*1e9, label="Bz")
+plt.plot(times, Bmag*1e9, linewidth=2, label="|B|")
 
-plt.axvline(peak_time, linestyle='--', color='black')
+plt.axvline(peak_time, linestyle='--')
 
 plt.xlim(peak_time - 0.01, peak_time + 0.02)
 
