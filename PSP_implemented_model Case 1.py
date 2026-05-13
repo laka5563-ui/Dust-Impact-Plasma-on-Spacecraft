@@ -176,7 +176,7 @@ def sensitivity_test(mesh, SCM, B_peak):
     return pt
 
 # ============================================================
-# ✅ FIXED ION ESTIMATION
+# ION ESTIMATION
 # ============================================================
 
 def estimate_ions(Bmag, distance):
