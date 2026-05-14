@@ -11,7 +11,7 @@ mu0 = 4*np.pi*1e-7
 q_ion = 1.6e-19
 
 # ============================================================
-# TIME (FROM CODE 1 ✅)
+# TIME
 # ============================================================
 
 times = np.linspace(0.85, 0.90, 1200)
@@ -34,23 +34,42 @@ def impact_pulse(t, t0):
     return y
 
 # ============================================================
-# SIGNAL (FROM CODE 1 ✅)
+# SIGNAL
 # ============================================================
 
-def generate_measured_data():
+def generate_measured_data(mesh, SCM):
 
     pulse = impact_pulse(times, t0_true)
 
+    # -----------------------------
+    # GAUSSIAN VELOCITY (UNCHANGED)
+    # -----------------------------
+    centroid = np.mean(mesh.vectors.reshape(-1,3), axis=0)
+    distance = np.linalg.norm(SCM - centroid)
+
+    mean_v = 6000
+    std_v  = 0.15 * mean_v
+
+    velocities = np.random.normal(mean_v, std_v, 2000)
+    velocities = velocities[velocities > 0]
+
+    tof = distance / velocities
+    spread_time = np.std(tof)
+    sigma = spread_time / dt
+
+    pulse = gaussian_filter1d(pulse, sigma)
+
+    # -----------------------------
+    # MAGNETIC SIGNAL
+    # -----------------------------
     Bx = -0.25e-9 * pulse
     By = -0.20e-9 * pulse
     Bz =  0.05e-9 * pulse
 
-    # spikes
     Bx += -0.18e-9 * np.exp(-((times - t0_true)/0.0005)**2)
     By += -0.12e-9 * np.exp(-((times - (t0_true+0.00015))/0.0007)**2)
     Bz +=  0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
-    # decay
     decay = np.exp(-(times - t0_true)/0.008)
     decay[times < t0_true] = 0
 
@@ -58,7 +77,6 @@ def generate_measured_data():
     By += -0.025e-9 * decay
     Bz +=  0.015e-9 * decay
 
-    # oscillation
     osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
     osc[times < t0_true] = 0
 
@@ -66,7 +84,6 @@ def generate_measured_data():
     By += 0.8 * osc
     Bz += 0.3 * osc
 
-    # noise
     noise = 0.01e-9
     Bx += noise*np.random.randn(len(times))
     By += noise*np.random.randn(len(times))
@@ -75,7 +92,7 @@ def generate_measured_data():
     return Bx, By, Bz
 
 # ============================================================
-# BIOT-SAVART (FROM CODE 2 ✅)
+# BIOT-SAVART
 # ============================================================
 
 def biot_savart_segment(r_obs, r1, r2):
@@ -108,7 +125,7 @@ def load_stl_geometry(path):
     return m
 
 # ============================================================
-# INVERSE SOLVER (CODE 2)
+# INVERSE SOLVER
 # ============================================================
 
 def estimate_impact_inverse(mesh, SCM, B_peak):
@@ -178,7 +195,7 @@ def sensitivity_test(mesh, SCM, B_peak):
     return pt
 
 # ============================================================
-# ION ESTIMATION (FIXED)
+# ION ESTIMATION
 # ============================================================
 
 def estimate_ions(Bmag, distance):
@@ -196,7 +213,6 @@ def estimate_ions(Bmag, distance):
     B_local[B_local < 0] = 0
 
     I = (2*np.pi*distance*B_local)/mu0
-
     I[I < 0.1*np.max(I)] = 0
 
     Q = np.sum(I)*dt
@@ -217,11 +233,7 @@ if __name__ == "__main__":
     mesh = load_stl_geometry(STL_PATH)
     SCM = np.array([-0.3, -0.5, 4.3])
 
-    Bx, By, Bz = generate_measured_data()
-
-    Bx = gaussian_filter1d(Bx,1)
-    By = gaussian_filter1d(By,1)
-    Bz = gaussian_filter1d(Bz,1)
+    Bx, By, Bz = generate_measured_data(mesh, SCM)
 
     Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
 
@@ -258,11 +270,67 @@ if __name__ == "__main__":
     print("Ions:", ions)
 
 # ============================================================
-# PLOT
+# TOP-5 SOLUTION CLUSTER
 # ============================================================
 
-peak_idx = np.argmax(Bmag)
-peak_time = times[peak_idx]
+fig = plt.figure(figsize=(7,7))
+ax = fig.add_subplot(111, projection='3d')
+
+# All candidate points (light)
+ax.scatter(all_points[:,0], all_points[:,1], all_points[:,2],
+           c='lightgray', s=5, alpha=0.3)
+
+# Top 5
+ax.scatter(top_pts[:,0], top_pts[:,1], top_pts[:,2],
+           c='red', s=80, label='Top 5 Solutions')
+
+# Best solution
+ax.scatter(impact_point[0], impact_point[1], impact_point[2],
+           c='blue', s=120, label='Best Solution')
+
+# SCM location 
+ax.scatter(SCM[0], SCM[1], SCM[2],
+           c='green', s=120, label='SCM')
+
+ax.set_title("Top-5 Impact Solution Cluster")
+ax.set_xlabel("X (m)")
+ax.set_ylabel("Y (m)")
+ax.set_zlabel("Z (m)")
+ax.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# ERROR DISTRIBUTION MAP
+# ============================================================
+
+fig = plt.figure(figsize=(7,7))
+ax = fig.add_subplot(111, projection='3d')
+
+scatter = ax.scatter(all_points[:,0], all_points[:,1], all_points[:,2],
+                     c=all_errors, cmap='viridis', s=10)
+
+# Highlight best point
+ax.scatter(impact_point[0], impact_point[1], impact_point[2],
+           c='red', s=120, label='Minimum Error')
+
+cbar = plt.colorbar(scatter, ax=ax, shrink=0.6)
+cbar.set_label('Residual Error')
+
+ax.set_title("Residual Error Distribution Across Surface")
+ax.set_xlabel("X (m)")
+ax.set_ylabel("Y (m)")
+ax.set_zlabel("Z (m)")
+ax.legend()
+
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# PLOT
+# ============================================================
 
 plt.figure(figsize=(12,4))
 
@@ -276,4 +344,5 @@ plt.legend()
 plt.grid()
 plt.xlabel("Time (s)")
 plt.ylabel("SCM (nT)")
+
 plt.show()
