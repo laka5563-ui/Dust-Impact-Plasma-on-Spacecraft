@@ -11,7 +11,7 @@ mu0 = 4*np.pi*1e-7
 q_ion = 1.6e-19
 
 # ============================================================
-# TIME
+# TIME 
 # ============================================================
 
 times = np.linspace(1.7, 1.8, 1200)
@@ -34,12 +34,40 @@ def impact_pulse(t, t0):
     return y
 
 # ============================================================
-# SIGNAL
+# SIGNAL 
 # ============================================================
 
-def generate_measured_data():
+def generate_measured_data(mesh, SCM):
 
     pulse = impact_pulse(times, t0_true)
+
+    # ===============================
+    # GAUSSIAN VELOCITY 
+    # ===============================
+
+    # geometry-based distance 
+    centroid = np.mean(mesh.vectors.reshape(-1,3), axis=0)
+    distance = np.linalg.norm(SCM - centroid)
+
+    # velocity distribution
+    mean_v = 6000
+    std_v  = 0.15 * mean_v
+
+    velocities = np.random.normal(mean_v, std_v, 2000)
+    velocities = velocities[velocities > 0]
+
+    # time-of-flight spread
+    tof = distance / velocities
+    spread_time = np.std(tof)
+
+    # sigma from physics
+    sigma = spread_time / dt
+
+    pulse = gaussian_filter1d(pulse, sigma)
+
+    # ===============================
+    # MAGNETIC SIGNAL
+    # ===============================
 
     Bx = -2.2e-10 * pulse
     By =  1.8e-10 * pulse
@@ -75,7 +103,7 @@ def generate_measured_data():
     return Bx, By, Bz
 
 # ============================================================
-# BIOT-SAVART SEGMENT
+# BIOT-SAVART
 # ============================================================
 
 def biot_savart_segment(r_obs, r1, r2):
@@ -83,8 +111,8 @@ def biot_savart_segment(r_obs, r1, r2):
     dl = r2 - r1
     B = np.zeros(3)
 
-    for s in np.linspace(0,1,10):
-        point = r1 + s*dl
+    for s in np.linspace(0, 1, 10):
+        point = r1 + s * dl
         r = r_obs - point
         r_norm = np.linalg.norm(r)
 
@@ -102,8 +130,8 @@ def biot_savart_segment(r_obs, r1, r2):
 
 def load_stl_geometry(path):
     m = stl_mesh.Mesh.from_file(path)
-    verts = m.vectors.reshape(-1,3)
-    center = (verts.min(axis=0) + verts.max(axis=0))/2
+    verts = m.vectors.reshape(-1, 3)
+    center = (verts.min(axis=0) + verts.max(axis=0)) / 2
     m.vectors -= center
     return m
 
@@ -123,9 +151,10 @@ def estimate_impact_inverse(mesh, SCM, B_peak):
     for i, tri in enumerate(mesh.vectors):
 
         p = np.mean(tri, axis=0)
+
         B_model = biot_savart_segment(SCM, tri[0], tri[1])
 
-        scale = np.dot(B_peak, B_model)/(np.dot(B_model,B_model)+1e-20)
+        scale = np.dot(B_peak, B_model) / (np.dot(B_model, B_model) + 1e-20)
         B_scaled = scale * B_model
 
         error = np.linalg.norm(B_peak - B_scaled)
@@ -141,7 +170,7 @@ def estimate_impact_inverse(mesh, SCM, B_peak):
     return best_point, best_tri, best_error, np.array(all_points), np.array(all_errors)
 
 # ============================================================
-# VALIDATION
+# VALIDATION FUNCTIONS
 # ============================================================
 
 def forward_model_error(point, SCM, B_peak, mesh):
@@ -158,9 +187,10 @@ def forward_model_error(point, SCM, B_peak, mesh):
             tri_idx = i
 
     tri = mesh.vectors[tri_idx]
+
     B_model = biot_savart_segment(SCM, tri[0], tri[1])
 
-    scale = np.dot(B_peak, B_model)/(np.dot(B_model,B_model)+1e-20)
+    scale = np.dot(B_peak, B_model)/(np.dot(B_model, B_model)+1e-20)
     B_scaled = scale * B_model
 
     return np.linalg.norm(B_peak - B_scaled)
@@ -176,7 +206,7 @@ def sensitivity_test(mesh, SCM, B_peak):
     return pt
 
 # ============================================================
-# FIXED ION ESTIMATION
+# ION ESTIMATION
 # ============================================================
 
 def estimate_ions(Bmag, distance):
@@ -184,26 +214,22 @@ def estimate_ions(Bmag, distance):
     peak_idx = np.argmax(Bmag)
 
     window = 15
-    start = max(0, peak_idx-window)
-    end   = min(len(Bmag), peak_idx+window)
+    start = max(0, peak_idx - window)
+    end = min(len(Bmag), peak_idx + window)
 
     B_local = Bmag[start:end]
 
-    # remove baseline
     baseline = np.mean(Bmag[:50])
     B_local = B_local - baseline
     B_local[B_local < 0] = 0
 
-    # current
-    I = (2*np.pi*distance*B_local)/mu0
+    I = (2 * np.pi * distance * B_local) / mu0
+    I[I < 0.1 * np.max(I)] = 0
 
-    # remove noise currents
-    I[I < 0.1*np.max(I)] = 0
-
-    Q = np.sum(I)*dt
+    Q = np.sum(I) * dt
 
     efficiency = 0.05
-    ions = (Q*efficiency)/q_ion
+    ions = (Q * efficiency) / q_ion
 
     return ions
 
@@ -213,20 +239,18 @@ def estimate_ions(Bmag, distance):
 
 if __name__ == "__main__":
 
-    STL_PATH = r"C:/Users/klpra/OneDrive/Desktop/CU Boulder/Academics/Spring 2026/IS/PSP_CAD/PSP_CAD/PSP_Simplified.stl"
+    STL_PATH = r"C:\Users\klpra\OneDrive\Desktop\CU Boulder\Academics\Spring 2026\IS\PSP_CAD\PSP_CAD\PSP_Simplified.stl"
 
     mesh = load_stl_geometry(STL_PATH)
     SCM = np.array([-0.3, -0.5, 4.3])
 
-    Bx, By, Bz = generate_measured_data()
-
-    Bx = gaussian_filter1d(Bx,1)
-    By = gaussian_filter1d(By,1)
-    Bz = gaussian_filter1d(Bz,1)
+    Bx, By, Bz = generate_measured_data(mesh, SCM)
 
     Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
 
     peak_idx = np.argmax(Bmag)
+    peak_time = times[peak_idx]
+
     B_peak = np.array([Bx[peak_idx], By[peak_idx], Bz[peak_idx]])
 
     impact_point, tri_idx, error, all_points, all_errors = estimate_impact_inverse(mesh, SCM, B_peak)
@@ -257,24 +281,79 @@ if __name__ == "__main__":
     print("Ions:", ions)
 
 # ============================================================
+# TOP-5 SOLUTION CLUSTER
+# ============================================================
+
+fig = plt.figure(figsize=(7,7))
+ax = fig.add_subplot(111, projection='3d')
+
+# All candidate points
+ax.scatter(all_points[:,0], all_points[:,1], all_points[:,2],
+           c='lightgray', s=5, alpha=0.3)
+
+# Top 5 solutions
+ax.scatter(top_pts[:,0], top_pts[:,1], top_pts[:,2],
+           c='red', s=80, label='Top 5 Solutions')
+
+# Best solution
+ax.scatter(impact_point[0], impact_point[1], impact_point[2],
+           c='blue', s=120, label='Best Solution')
+
+# SCM location
+ax.scatter(SCM[0], SCM[1], SCM[2],
+           c='green', s=120, label='SCM')
+
+ax.set_title("Top-5 Impact Solution Cluster")
+ax.set_xlabel("X (m)")
+ax.set_ylabel("Y (m)")
+ax.set_zlabel("Z (m)")
+ax.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# ERROR DISTRIBUTION MAP
+# ============================================================
+
+fig = plt.figure(figsize=(7,7))
+ax = fig.add_subplot(111, projection='3d')
+
+scatter = ax.scatter(all_points[:,0], all_points[:,1], all_points[:,2],
+                     c=all_errors, cmap='viridis', s=10)
+
+# Best solution
+ax.scatter(impact_point[0], impact_point[1], impact_point[2],
+           c='red', s=120, label='Minimum Error')
+
+cbar = plt.colorbar(scatter, ax=ax, shrink=0.6)
+cbar.set_label('Residual Error')
+
+ax.set_title("Residual Error Distribution Across Surface")
+ax.set_xlabel("X (m)")
+ax.set_ylabel("Y (m)")
+ax.set_zlabel("Z (m)")
+ax.legend()
+
+plt.tight_layout()
+plt.show()
+
+# ============================================================
 # PLOT
 # ============================================================
 
-peak_idx = np.argmax(Bmag)
-peak_time = times[peak_idx]
+plt.figure(figsize=(12,4))
 
-plt.figure(figsize=(20,5))
-plt.plot(times, Bx*1e9, label="Bx", linewidth=1.5)
-plt.plot(times, By*1e9, label="By", linewidth=1.5)
-plt.plot(times, Bz*1e9, label="Bz", linewidth=1.5)
+plt.plot(times, Bx*1e9, label="Bx")
+plt.plot(times, By*1e9, label="By")
+plt.plot(times, Bz*1e9, label="Bz")
 plt.plot(times, Bmag*1e9, label="|B|", linewidth=2)
 
-plt.axvline(peak_time, linestyle='--', linewidth=1.5)
-plt.xlim(peak_time - 0.015, peak_time + 0.03)
+plt.axvline(peak_time, linestyle='--')
 plt.legend()
-plt.grid(alpha=0.3)
-plt.xlabel("Time (s)", fontsize=12, labelpad=10)
-plt.ylabel("SCM (nT)", fontsize=12, labelpad=10)
-plt.subplots_adjust(left=0.08, bottom=0.18)
+plt.grid()
+plt.xlabel("Time (s)")
+plt.ylabel("SCM (nT)")
 
 plt.show()
