@@ -176,7 +176,7 @@ def sensitivity_test(mesh, SCM, B_peak):
     return pt
 
 # ============================================================
-# ION ESTIMATION
+# ✅ FIXED ION ESTIMATION
 # ============================================================
 
 def estimate_ions(Bmag, distance):
@@ -238,8 +238,6 @@ if __name__ == "__main__":
     top_pts, top_errs, top_idx = get_top_solutions(all_points, all_errors)
     new_pt = sensitivity_test(mesh, SCM, B_peak)
 
-    # ================= PRINT =================
-
     print("\n===== FORWARD MODEL CHECK =====")
     print("Difference:", forward_err)
 
@@ -262,15 +260,21 @@ if __name__ == "__main__":
 # PLOT
 # ============================================================
 
-plt.figure(figsize=(12,4))
-plt.plot(times, Bx*1e9, label="Bx")
-plt.plot(times, By*1e9, label="By")
-plt.plot(times, Bz*1e9, label="Bz")
+peak_idx = np.argmax(Bmag)
+peak_time = times[peak_idx]
+
+plt.figure(figsize=(20,5))
+plt.plot(times, Bx*1e9, label="Bx", linewidth=1.5)
+plt.plot(times, By*1e9, label="By", linewidth=1.5)
+plt.plot(times, Bz*1e9, label="Bz", linewidth=1.5)
 plt.plot(times, Bmag*1e9, label="|B|", linewidth=2)
 
-plt.axvline(times[np.argmax(Bmag)], linestyle='--')
+plt.axvline(peak_time, linestyle='--', linewidth=1.5)
+plt.xlim(peak_time - 0.015, peak_time + 0.03)
 plt.legend()
-plt.grid()
-plt.xlabel("Time (s)")
-plt.ylabel("SCM (nT)")
+plt.grid(alpha=0.3)
+plt.xlabel("Time (s)", fontsize=12, labelpad=10)
+plt.ylabel("SCM (nT)", fontsize=12, labelpad=10)
+plt.subplots_adjust(left=0.08, bottom=0.18)
+
 plt.show()
