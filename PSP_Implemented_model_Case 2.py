@@ -11,16 +11,7 @@ mu0 = 4*np.pi*1e-7
 q_ion = 1.6e-19
 
 # ============================================================
-# HELIOCENTRIC DISTANCE (PSP)
-# ============================================================
-
-R_sun_radius = 6.96e8
-R_psp_surface = 6.1e9
-R_psp = R_psp_surface + R_sun_radius
-R_ref = 1.496e11
-
-# ============================================================
-# TIME
+# TIME (FROM CODE 1 ✅)
 # ============================================================
 
 times = np.linspace(0.85, 0.90, 1200)
@@ -43,7 +34,7 @@ def impact_pulse(t, t0):
     return y
 
 # ============================================================
-# SIGNAL 
+# SIGNAL (FROM CODE 1 ✅)
 # ============================================================
 
 def generate_measured_data():
@@ -54,20 +45,20 @@ def generate_measured_data():
     By = -0.20e-9 * pulse
     Bz =  0.05e-9 * pulse
 
-    # Gaussian spikes
+    # spikes
     Bx += -0.18e-9 * np.exp(-((times - t0_true)/0.0005)**2)
     By += -0.12e-9 * np.exp(-((times - (t0_true+0.00015))/0.0007)**2)
-    Bz += 0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
+    Bz +=  0.04e-9 * np.exp(-((times - (t0_true-0.0001))/0.0006)**2)
 
-    # Decay
+    # decay
     decay = np.exp(-(times - t0_true)/0.008)
     decay[times < t0_true] = 0
 
     Bx += -0.06e-9 * decay
     By += -0.025e-9 * decay
-    Bz += 0.015e-9 * decay
+    Bz +=  0.015e-9 * decay
 
-    # Oscillation
+    # oscillation
     osc = 0.015e-9 * np.sin(600*(times - t0_true)) * np.exp(-(times-t0_true)/0.01)
     osc[times < t0_true] = 0
 
@@ -75,7 +66,7 @@ def generate_measured_data():
     By += 0.8 * osc
     Bz += 0.3 * osc
 
-    # Noise
+    # noise
     noise = 0.01e-9
     Bx += noise*np.random.randn(len(times))
     By += noise*np.random.randn(len(times))
@@ -84,18 +75,40 @@ def generate_measured_data():
     return Bx, By, Bz
 
 # ============================================================
+# BIOT-SAVART (FROM CODE 2 ✅)
+# ============================================================
+
+def biot_savart_segment(r_obs, r1, r2):
+
+    dl = r2 - r1
+    B = np.zeros(3)
+
+    for s in np.linspace(0,1,10):
+        point = r1 + s*dl
+        r = r_obs - point
+        r_norm = np.linalg.norm(r)
+
+        if r_norm < 1e-9:
+            continue
+
+        dB = (mu0/(4*np.pi)) * np.cross(dl/10, r) / (r_norm**3)
+        B += dB
+
+    return B
+
+# ============================================================
 # GEOMETRY
 # ============================================================
 
 def load_stl_geometry(path):
     m = stl_mesh.Mesh.from_file(path)
-    verts = m.vectors.reshape(-1, 3)
-    center = (verts.min(axis=0) + verts.max(axis=0)) / 2
+    verts = m.vectors.reshape(-1,3)
+    center = (verts.min(axis=0) + verts.max(axis=0))/2
     m.vectors -= center
     return m
 
 # ============================================================
-# INVERSE SOLVER
+# INVERSE SOLVER (CODE 2)
 # ============================================================
 
 def estimate_impact_inverse(mesh, SCM, B_peak):
@@ -104,118 +117,94 @@ def estimate_impact_inverse(mesh, SCM, B_peak):
     best_point = None
     best_tri = -1
 
+    all_points = []
+    all_errors = []
+
     for i, tri in enumerate(mesh.vectors):
 
-        p = (tri[0] + tri[1] + tri[2]) / 3
-        r = SCM - p
-        r_norm = np.linalg.norm(r)
+        p = np.mean(tri, axis=0)
 
-        if r_norm < 1e-6:
-            continue
+        B_model = biot_savart_segment(SCM, tri[0], tri[1])
 
-        B_model = r / (r_norm**3)
+        scale = np.dot(B_peak, B_model)/(np.dot(B_model,B_model)+1e-20)
+        B_scaled = scale * B_model
 
-        scale = np.dot(B_peak, B_model) / np.dot(B_model, B_model)
-        B_model_scaled = scale * B_model
+        error = np.linalg.norm(B_peak - B_scaled)
 
-        error = np.linalg.norm(B_peak - B_model_scaled)
+        all_points.append(p)
+        all_errors.append(error)
 
         if error < best_error:
             best_error = error
             best_point = p
             best_tri = i
 
-    return best_point, best_tri, best_error
+    return best_point, best_tri, best_error, np.array(all_points), np.array(all_errors)
 
 # ============================================================
-# SUN SCALING
+# VALIDATION
+# ============================================================
+
+def forward_model_error(point, SCM, B_peak, mesh):
+
+    min_dist = np.inf
+    tri_idx = 0
+
+    for i, tri in enumerate(mesh.vectors):
+        p = np.mean(tri, axis=0)
+        d = np.linalg.norm(point - p)
+
+        if d < min_dist:
+            min_dist = d
+            tri_idx = i
+
+    tri = mesh.vectors[tri_idx]
+
+    B_model = biot_savart_segment(SCM, tri[0], tri[1])
+
+    scale = np.dot(B_peak, B_model)/(np.dot(B_model,B_model)+1e-20)
+    B_scaled = scale * B_model
+
+    return np.linalg.norm(B_peak - B_scaled)
+
+def get_top_solutions(points, errors, n=5):
+    idx = np.argsort(errors)[:n]
+    return points[idx], errors[idx], idx
+
+def sensitivity_test(mesh, SCM, B_peak):
+    noise = 0.05 * B_peak * np.random.randn(3)
+    B_new = B_peak + noise
+    pt, _, _, _, _ = estimate_impact_inverse(mesh, SCM, B_new)
+    return pt
+
+# ============================================================
+# ION ESTIMATION (FIXED)
 # ============================================================
 
 def estimate_ions(Bmag, distance):
 
     peak_idx = np.argmax(Bmag)
-    window = 30
 
-    start = max(0, peak_idx - window)
-    end = min(len(Bmag), peak_idx + window)
+    window = 15
+    start = max(0, peak_idx-window)
+    end   = min(len(Bmag), peak_idx+window)
 
     B_local = Bmag[start:end]
 
-    # --------------------------------------------------------
-    # CURRENT FROM MAGNETIC FIELD
-    # --------------------------------------------------------
+    baseline = np.mean(Bmag[:50])
+    B_local = B_local - baseline
+    B_local[B_local < 0] = 0
 
-    I = (2 * np.pi * distance * B_local) / mu0
+    I = (2*np.pi*distance*B_local)/mu0
 
-    # --------------------------------------------------------
-    # HELIOCENTRIC SCALING 
-    # --------------------------------------------------------
-   
-    ratio = R_ref / R_psp
+    I[I < 0.1*np.max(I)] = 0
 
-    plasma_scale = ratio**2          # density scaling
-    velocity_scale = ratio**1.5      # v^3 scaling
-    dust_scale = ratio**1.3          # dust flux scaling
+    Q = np.sum(I)*dt
 
-    helioscale = plasma_scale * velocity_scale * dust_scale
-
-    I = I * helioscale
-
-    # --------------------------------------------------------
-    # TOTAL CHARGE
-    # --------------------------------------------------------
-   
-    Q_total = np.sum(I) * dt
-
-    # --------------------------------------------------------
-    # PHYSICAL LOSS
-    # --------------------------------------------------------
-
-    electron_loss_factor = 0.3
-    Q_effective = Q_total * (1 - electron_loss_factor)
-
-    #--------------------------------------------------------
-    # IONS
-    # --------------------------------------------------------
-
-    ions = Q_effective / q_ion
+    efficiency = 0.05
+    ions = (Q*efficiency)/q_ion
 
     return ions
-
-# ============================================================
-# VALIDATION FUNCTIONS
-# ============================================================
-
-def forward_model_error(point, SCM, B_peak):
-    r = SCM - point
-    r_norm = np.linalg.norm(r)
-    B_model = r / (r_norm**3)
-
-    scale = np.dot(B_peak, B_model) / np.dot(B_model, B_model)
-    B_model_scaled = scale * B_model
-
-    return np.linalg.norm(B_peak - B_model_scaled)
-
-
-def get_top_solutions(mesh, SCM, B_peak, top_n=5):
-    solutions = []
-
-    for i, tri in enumerate(mesh.vectors):
-        p = (tri[0] + tri[1] + tri[2]) / 3
-        err = forward_model_error(p, SCM, B_peak)
-        solutions.append((err, i, p))
-
-    solutions.sort(key=lambda x: x[0])
-    return solutions[:top_n]
-
-
-def sensitivity_test(mesh, SCM, B_peak, noise_level=0.05):
-    noise = noise_level * B_peak * np.random.randn(3)
-    B_perturbed = B_peak + noise
-
-    new_point, _, _ = estimate_impact_inverse(mesh, SCM, B_perturbed)
-    return new_point
-
 
 # ============================================================
 # MAIN
@@ -230,54 +219,37 @@ if __name__ == "__main__":
 
     Bx, By, Bz = generate_measured_data()
 
-    Bx = gaussian_filter1d(Bx, 1)
-    By = gaussian_filter1d(By, 1)
-    Bz = gaussian_filter1d(Bz, 1)
+    Bx = gaussian_filter1d(Bx,1)
+    By = gaussian_filter1d(By,1)
+    Bz = gaussian_filter1d(Bz,1)
 
     Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
 
     peak_idx = np.argmax(Bmag)
     peak_time = times[peak_idx]
 
-    B_peak = np.array([
-        Bx[peak_idx],
-        By[peak_idx],
-        Bz[peak_idx]
-    ])
+    B_peak = np.array([Bx[peak_idx], By[peak_idx], Bz[peak_idx]])
 
-    # ================= INVERSE =================
+    impact_point, tri_idx, error, all_points, all_errors = estimate_impact_inverse(mesh, SCM, B_peak)
 
-    impact_point, tri_idx, error = estimate_impact_inverse(mesh, SCM, B_peak)
     distance = np.linalg.norm(SCM - impact_point)
     ions = estimate_ions(Bmag, distance)
 
-    # ================= FORWARD CHECK =================
-
-    forward_err = forward_model_error(impact_point, SCM, B_peak)
+    forward_err = forward_model_error(impact_point, SCM, B_peak, mesh)
+    top_pts, top_errs, top_idx = get_top_solutions(all_points, all_errors)
+    new_pt = sensitivity_test(mesh, SCM, B_peak)
 
     print("\n===== FORWARD MODEL CHECK =====")
     print("Difference:", forward_err)
 
-    # ================= TOP SOLUTIONS =================
-
     print("\n===== TOP 5 SOLUTIONS =====")
-
-    top_solutions = get_top_solutions(mesh, SCM, B_peak, top_n=5)
-
-    for err, tri, pt in top_solutions:
-        print(f"Error: {err:.3e}, Triangle: {tri}, Point: {pt}")
-
-    # ================= SENSITIVITY TEST =================
+    for i in range(len(top_pts)):
+        print(f"Error: {top_errs[i]:.3e}, Triangle: {top_idx[i]}, Point: {top_pts[i]}")
 
     print("\n===== SENSITIVITY TEST =====")
-
-    new_point = sensitivity_test(mesh, SCM, B_peak)
-
     print("Original impact:", impact_point)
-    print("New impact:", new_point)
+    print("New impact:", new_pt)
 
-    # ================= FINAL OUTPUT =================
-    
     print("\n===== IMPACT ESTIMATION =====")
     print("Triangle:", tri_idx)
     print("Coordinates:", impact_point)
@@ -285,24 +257,23 @@ if __name__ == "__main__":
     print("Residual:", error)
     print("Ions:", ions)
 
-    # ================= PLOT =================
+# ============================================================
+# PLOT
+# ============================================================
 
-    plt.figure(figsize=(12,4))
+peak_idx = np.argmax(Bmag)
+peak_time = times[peak_idx]
 
-    plt.plot(times, Bx*1e9, color='blue', label="Bx")
-    plt.plot(times, By*1e9, color='orange', label="By")
-    plt.plot(times, Bz*1e9, color='green', label="Bz")
-    plt.plot(times, Bmag*1e9, color='red', linewidth=2, label="|B|")
+plt.figure(figsize=(12,4))
 
-    plt.axvline(peak_time, linestyle='--', color='black')
+plt.plot(times, Bx*1e9, label="Bx")
+plt.plot(times, By*1e9, label="By")
+plt.plot(times, Bz*1e9, label="Bz")
+plt.plot(times, Bmag*1e9, label="|B|", linewidth=2)
 
-    plt.xlim(peak_time - 0.01, peak_time + 0.02)
-
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.xlabel("Time (s)")
-    plt.ylabel("SCM (nT)")
-
-    plt.show()
-
-  
+plt.axvline(peak_time, linestyle='--')
+plt.legend()
+plt.grid()
+plt.xlabel("Time (s)")
+plt.ylabel("SCM (nT)")
+plt.show()
