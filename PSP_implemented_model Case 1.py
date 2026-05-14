@@ -343,17 +343,31 @@ plt.show()
 # PLOT
 # ============================================================
 
-plt.figure(figsize=(12,4))
+Bx_s = gaussian_filter1d(Bx, 2)
+By_s = gaussian_filter1d(By, 2)
+Bz_s = gaussian_filter1d(Bz, 2)
 
-plt.plot(times, Bx*1e9, label="Bx")
-plt.plot(times, By*1e9, label="By")
-plt.plot(times, Bz*1e9, label="Bz")
-plt.plot(times, Bmag*1e9, label="|B|", linewidth=2)
+Bmag = np.sqrt(Bx_s**2 + By_s**2 + Bz_s**2)
 
-plt.axvline(peak_time, linestyle='--')
+peak_idx = np.argmax(Bmag)
+peak_time = times[peak_idx]
+
+plt.figure(figsize=(14,4))  
+
+plt.plot(times, Bx_s*1e9, label="Bx", linewidth=1.5)
+plt.plot(times, By_s*1e9, label="By", linewidth=1.5)
+plt.plot(times, Bz_s*1e9, label="Bz", linewidth=1.5)
+plt.plot(times, Bmag*1e9, label="|B|", linewidth=2.5)
+
+# Peak marker
+plt.axvline(peak_time, linestyle='--', linewidth=1.5)
+
+plt.xlim(peak_time - 0.015, peak_time + 0.03)
+
 plt.legend()
-plt.grid()
+plt.grid(alpha=0.3)
 plt.xlabel("Time (s)")
 plt.ylabel("SCM (nT)")
 
+plt.tight_layout()
 plt.show()
