@@ -19,9 +19,7 @@ When a dust particle impacts a spacecraft at hypervelocity:
 
 The magnetic field is approximated using a simplified Biot–Savart formulation:
 
-[
-B \propto \frac{I \times r}{r^3}
-]
+B ∝ (I × r) / r^3
 
 where:
 
